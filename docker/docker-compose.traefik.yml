@@ -1,0 +1,87 @@
+version: '3.3'
+
+configs:
+    graphite_storage_schemas:
+        file: ./graphite/conf/storage-schemas.conf
+    graphite_storage_aggregation:
+        file: ./graphite/conf/storage-aggregation.conf
+    graphite_carbon:
+        file: ./graphite/conf/carbon.conf
+
+volumes:
+    whisper:
+    sitespeed:
+
+networks:
+    swarmprom_net:
+        external: true
+    traefik-public:
+        external: true
+
+services:
+    sitespeed_io:
+        image: sitespeedio/sitespeed.io:9.6.0-plus1
+        deploy:
+            placement:
+                constraints:
+                    - node.role != manager
+        command: --graphite.host=graphite ${SITESPEED_COMMAND}
+        volumes:
+            - sitespeed:/sitespeed.io/sitespeed-result
+        networks:
+            - swarmprom_net
+
+    graphite:
+        image: sitespeedio/graphite:1.1.5-12
+        deploy:
+            mode: replicated
+            replicas: 1
+            placement:
+                constraints:
+                    - node.role == manager
+            labels:
+                traefik.tags: traefik-public
+                traefik.redirectorservice.frontend.redirect.entryPoint: https
+                traefik.webservice.frontend.entryPoints: https
+                traefik.redirectorservice.frontend.entryPoints: http
+                traefik.docker.network: traefik-public
+                traefik.enable: 'true'
+                traefik.port: '80'
+                traefik.frontend.rule: Host:graphite.${DOMAIN}
+        ports:
+            - 2003:2003
+        volumes:
+            # In production you should configure/map these to your container
+            # Make sure whisper and graphite.db/grafana.db lives outside your containerr
+            # https://www.sitespeed.io/documentation/sitespeed.io/graphite/#graphite-for-production-important
+            - whisper:/opt/graphite/storage/whisper
+            # Download an empty graphite.db from https://github.com/sitespeedio/sitespeed.io/tree/master/docker/graphite
+            - ./graphite/graphite.db:/opt/graphite/storage/graphite.db
+            #- ./graphite/conf/storage-schemas.conf:/opt/graphite/conf/storage-schemas.conf
+            #- ./graphite/conf/storage-aggregation.conf:/opt/graphite/conf/storage-aggregation.conf
+            #- ./graphite/conf/carbon.conf:/opt/graphite/conf/carbon.conf
+        networks:
+            - swarmprom_net
+            - traefik-public
+        configs:
+            -
+                source: graphite_storage_schemas
+                target: /opt/graphite/conf/storage-schemas.conf
+            -
+                source: graphite_storage_aggregation
+                target: /opt/graphite/conf/storage-aggregation.conf
+            -
+                source: graphite_carbon
+                target: /opt/graphite/conf/carbon.conf
+
+    # No need to add it to the swarm, just run this setup once:
+    #
+    # $ docker run -it --network swarmprom_net -e GF_PASSWORD=${ADMIN_PASSWORD} -e GF_USER=${ADMIN_USER} sitespeedio/grafana-bootstrap:9.1.1
+    #
+    # grafana-setup:
+    #     image: sitespeedio/grafana-bootstrap:9.1.1
+    #     environment:
+    #         - GF_PASSWORD=${ADMIN_PASSWORD:-admin}
+    #         - GF_USER=${ADMIN_USER:-admin}
+    #     networks:
+    #         - swarmprom_net
